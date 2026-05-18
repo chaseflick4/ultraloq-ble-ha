@@ -10,7 +10,8 @@ __pycache__
 .coverage
 .vscode
 coverage.xml
-
+._DS_Store
+.DS_Store
 
 # Home Assistant configuration
 config/*
