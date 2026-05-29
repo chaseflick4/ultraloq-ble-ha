@@ -1,6 +1,6 @@
 # Ultraloq BLE
 
-This is a forked Home Assistant custom integration for Ultraloq BLE locks.
+This is a forked Home Assistant custom integration for Ultraloq / U-Tec / Xthings BLE locks.
 
 I really wanted to have local control over my U-Bolt Pro locks, and the original integration was simply nonfunctional for that. So I forked it and fixed the biggest bugs, then did extensive testing and iterating with the help of Codex. This integration should have all of the original features *(plus the first class sensors)* for non U-Bolt Pro locks, plus full support for the U-Bolt Pro locks.
 
