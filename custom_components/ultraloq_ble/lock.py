@@ -73,6 +73,8 @@ class UtecLock(LockEntity):
         self.lock._ha_available = True
         self.scaninterval = scan_interval
         self.poll_offset = poll_offset
+        self._attr_is_locking = False
+        self._attr_is_unlocking = False
         self.update_track_cancel = None
         self._cancel_unavailable_track = None
         self._attributes = {}
@@ -158,8 +160,17 @@ class UtecLock(LockEntity):
 
         if self.lock.lock_status == DeviceLockStatus.UNLOCKED.value:
             self._attr_is_locked = False
+            self._clear_transition_state()
         elif self.lock.lock_status == DeviceLockStatus.LOCKED.value:
             self._attr_is_locked = True
+            self._clear_transition_state()
+
+    @callback
+    def _clear_transition_state(self) -> None:
+        """Clear transitional lock state flags."""
+
+        self._attr_is_locking = False
+        self._attr_is_unlocking = False
 
     async def async_added_to_hass(self):
         """Run when entity about to be added to hass."""
@@ -360,17 +371,27 @@ class UtecLock(LockEntity):
     async def async_lock(self, **kwargs):
         """Lock the lock."""
         try:
+            self._attr_is_locking = True
+            self._attr_is_unlocking = False
+            self.async_write_ha_state()
             await self.lock.async_lock()
-            await self.async_update()
+            self._sync_state_from_lock()
+            self._notify_lock_state_listeners()
             self.async_write_ha_state()
         except (UtecBleDeviceError, UtecBleNotFoundError) as e:
+            self._clear_transition_state()
+            self.async_write_ha_state()
             LOGGER.error(e)
 
     async def async_unlock(self, **kwargs):
         """Unlock the lock."""
         try:
+            self._attr_is_unlocking = True
+            self._attr_is_locking = False
+            self.async_write_ha_state()
             await self.lock.async_unlock()
-            await self.async_update()
+            self._sync_state_from_lock()
+            self._notify_lock_state_listeners()
             self.async_write_ha_state()
             if self.lock.capabilities.autolock and self.lock.autolock_time:
                 async_call_later(
@@ -379,6 +400,8 @@ class UtecLock(LockEntity):
                     lambda Now: self._set_state_locked(),
                 )
         except (UtecBleDeviceError, UtecBleNotFoundError) as e:
+            self._clear_transition_state()
+            self.async_write_ha_state()
             LOGGER.error(e)
 
     async def async_open(self, **kwargs: Any) -> None:
