@@ -9,7 +9,7 @@ I really wanted to have local control over my U-Bolt Pro locks, and the original
 Entities currently exposed per lock:
 - `lock`
 - `sensor.battery_level`
-- `sensor
+- `sensor`
 - `sensor.lock_mode`
 - `sensor.bolt_status` when the model reports meaningful bolt status
 - `number.autolock_time`
