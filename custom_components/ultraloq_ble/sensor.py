@@ -41,7 +41,11 @@ SENSORS: tuple[UltraloqSensorDescription, ...] = (
         options=[level.name for level in DeviceBatteryLevel if level.name != "NOTSET"],
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:battery-bluetooth-variant",
-        value_fn=lambda lock: DeviceBatteryLevel(lock.battery).name,
+        value_fn=lambda lock: (
+            None
+            if lock.battery == DeviceBatteryLevel.NOTSET.value
+            else DeviceBatteryLevel(lock.battery).name
+        ),
     ),
     UltraloqSensorDescription(
         key="autolock_time",
