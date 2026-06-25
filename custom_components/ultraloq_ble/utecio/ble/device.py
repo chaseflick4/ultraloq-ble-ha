@@ -695,12 +695,15 @@ class UtecBleDeviceKey:
     @staticmethod
     async def get_shared_key(client: BleakClient, device: UtecBleDevice) -> bytes:
         if client.services.get_characteristic(DeviceKeyUUID.STATIC.value):
-            return bytearray(b"Anviz.ut") + await client.read_gatt_char(
-                DeviceKeyUUID.STATIC.value
-            )
+            device.debug("(%s) Using STATIC key exchange.", client.address)
+            secret = await client.read_gatt_char(DeviceKeyUUID.STATIC.value)
+            device.debug("(%s) STATIC key secret:%s", client.address, secret.hex())
+            return bytearray(b"Anviz.ut") + secret
         elif client.services.get_characteristic(DeviceKeyUUID.MD5.value):
+            device.debug("(%s) Using MD5 key exchange.", client.address)
             return await UtecBleDeviceKey.get_md5_key(client, device)
         elif client.services.get_characteristic(DeviceKeyUUID.ECC.value):
+            device.debug("(%s) Using ECC key exchange.", client.address)
             return await UtecBleDeviceKey.get_ecc_key(client, device)
         else:
             raise NotImplementedError(f"({client.address}) Unknown encryption.")
@@ -717,17 +720,31 @@ class UtecBleDeviceKey:
             notification_event = asyncio.Event()
 
             def notification_handler(sender, data):
-                # logger.debug(f"({client._mac_address}) ECC data:{data.hex()}")
+                device.debug(
+                    "(%s) ECC notification chunk sender=%s data=%s",
+                    client.address,
+                    getattr(sender, "uuid", sender),
+                    data.hex(),
+                )
                 received_pubkey.append(data)
                 if len(received_pubkey) == 2:
                     notification_event.set()
 
+            device.debug("(%s) Starting ECC notify.", client.address)
             await client.start_notify(DeviceKeyUUID.ECC.value, notification_handler)
+            device.debug("(%s) Writing ECC public key X=%s", client.address, pub_x.hex())
             await client.write_gatt_char(DeviceKeyUUID.ECC.value, pub_x)
+            device.debug("(%s) Writing ECC public key Y=%s", client.address, pub_y.hex())
             await client.write_gatt_char(DeviceKeyUUID.ECC.value, pub_y)
+            device.debug("(%s) Waiting for ECC key response.", client.address)
             await notification_event.wait()
 
             await client.stop_notify(DeviceKeyUUID.ECC.value)
+            device.debug(
+                "(%s) Received ECC public key parts=%s",
+                client.address,
+                len(received_pubkey),
+            )
 
             rec_key_point = Point(
                 SECP128r1.curve,
@@ -736,7 +753,7 @@ class UtecBleDeviceKey:
             )
             shared_point = private_key.privkey.secret_multiplier * rec_key_point  # type: ignore # noqa
             shared_key = int.to_bytes(shared_point.x(), 16, "little")
-            device.debug(f"({client.address}) ECC key updated.")
+            device.debug("(%s) ECC key updated: %s", client.address, shared_key.hex())
             return shared_key
         except Exception as e:
             e.add_note(f"({client.address}) Failed to update ECC key: {e}")
@@ -747,7 +764,7 @@ class UtecBleDeviceKey:
         try:
             secret = await client.read_gatt_char(DeviceKeyUUID.MD5.value)
 
-            device.debug(f"({client.address}) Secret: {secret.hex()}")
+            device.debug("(%s) MD5 key secret: %s", client.address, secret.hex())
 
             if len(secret) != 16:
                 raise device.error(
@@ -792,7 +809,7 @@ class UtecBleDeviceKey:
                 m.update(result)
                 result = m.digest()
 
-            device.debug(f"({client.address}) MD5 key:{result.hex()}")
+            device.debug("(%s) MD5 key: %s", client.address, result.hex())
             return result
 
         except Exception as e:
