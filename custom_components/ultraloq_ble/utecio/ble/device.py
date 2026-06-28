@@ -21,6 +21,8 @@ from ..enums import BleResponseCode, BLECommandCode, DeviceServiceUUID, DeviceKe
 from Crypto.Cipher import AES
 from bleak.backends.characteristic import BleakGATTCharacteristic
 
+RESPONSE_TIMEOUT_SECONDS = 15
+
 
 class UtecBleNotFoundError(Exception):
     def __init__(self, message: str, detail: str | None = None) -> None:
@@ -451,7 +453,21 @@ class UtecBleRequest:
             await client.write_gatt_char(
                 self.uuid, self.encrypted_package(self.aes_key)
             )
-            await self.response.response_completed.wait()
+            try:
+                await asyncio.wait_for(
+                    self.response.response_completed.wait(),
+                    timeout=RESPONSE_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as err:
+                raise self.device.error(
+                    UtecBleDeviceError(
+                        f"Error communicating with device {self.device.name}({self.device.mac_uuid}).",
+                        (
+                            f"Timed out waiting {RESPONSE_TIMEOUT_SECONDS} seconds "
+                            f"for {self.command.name} response."
+                        ),
+                    )
+                ) from err
             if (
                 self.command
                 in {
