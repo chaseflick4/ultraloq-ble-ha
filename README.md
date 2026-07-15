@@ -5,11 +5,14 @@
 
 ---
 
-This hardening work is based on [inventor7777/ultraloq-ble-ha](https://github.com/inventor7777/ultraloq-ble-ha), itself [forked from maeneak/utecio-ha](https://github.com/maeneak/utecio-ha). The original MIT license and attribution are preserved.
+This public hardening fork is based on [inventor7777/ultraloq-ble-ha](https://github.com/inventor7777/ultraloq-ble-ha), itself [forked from maeneak/utecio-ha](https://github.com/maeneak/utecio-ha). The original MIT license and attribution are preserved.
 
-I really wanted to have local control over my U-Bolt Pro locks, and the original integration wouldn't even start the config process. So I forked it and fixed the biggest bugs, then did extensive testing and iterating with the help of Codex. In addtion to extending lock support, autolock status and battery level are now first class sensors instead of being buried in the attributes. This integration should have all of the original features *(plus first class sensors)* for non U-Bolt Pro locks, *plus* full support for the U-Bolt Pro locks.
+The fork retains upstream's local BLE model support and first-class battery, auto-lock, mode, and bolt-status entities. It adds credential-safe enrollment storage, allowlist-only diagnostics, secret-safe integration logging, protocol and state-transition tests, and compatibility validation against Home Assistant Core 2026.7.2.
+
+`0.4.0-beta.1` is a supervised-test prerelease. Its automated coverage is synthetic; this fork has not yet been validated against the owner's physical original U-Bolt.
 
 ## Requirements
+
 - Active (GATT) Bluetooth support in Home Assistant, whether through [your host's built in Bluetooth](https://www.home-assistant.io/integrations/bluetooth/), a [local USB adapter](https://a.co/d/09RioHgV), or an [ESPHome Bluetooth proxy](https://esphome.io/components/bluetooth_proxy/).
 - Internet access during initial enrollment, and again only when the user explicitly refreshes enrollment.
 
@@ -29,11 +32,10 @@ Important Bluetooth note:
 - If HA decides that the advertisement is not connectable, it will cause status updates and lock controls to fail
 
 ## Install
-> **Hardening branch:** Until these changes are merged and released upstream, the HACS badge below installs the upstream release, not this branch. To evaluate the hardening branch, use the manual installation steps with files checked out from `hardening/security-ha-2026.7.2`.
 
 You can install using HACS:
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=inventor7777&repository=ultraloq-ble-ha&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=chaseflick4&repository=ultraloq-ble-ha&category=integration)
 
 Or manually:
 1. Open your Home Assistant config directory.
@@ -108,6 +110,6 @@ Check:
 - the lock is in Bluetooth range
 - your Home Assistant Bluetooth adapter or ESPHome proxy can make active connections
 - the lock is not only being seen as `connectable: false`
-- Unsupported device, in which case you could try reporting an issue here
+- If the device is unsupported, report it in this fork's issue tracker without including credentials, identifiers, or packet captures.
 
-*Full disclaimer: Most of the improvements from the original were by GPT 5.4 Codex. However, I personally use this integration and I am happy with it, so I am sharing it in case it could be useful to anyone else.*
+This fork is experimental software for a physical-access device. Review the supervised real-lock test plan before issuing any write command, and never test unlock unattended.

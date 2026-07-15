@@ -1,5 +1,5 @@
 {
-    "name": "Ultraloq BLE",
-    "version": "0.3.11",
+    "name": "Ultraloq BLE Hardened",
+    "homeassistant": "2026.7.2",
     "render_readme": true
 }
