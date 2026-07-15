@@ -1,14 +1,10 @@
 """Lock platform for Ultraloq integration."""
 from __future__ import annotations
 
-from typing import Any
 from datetime import timedelta
+from typing import Any
 
 from bleak.backends.device import BLEDevice
-from .utecio.ble.lock import UtecBleLock
-from .utecio.ble.device import UtecBleNotFoundError, UtecBleDeviceError
-from .utecio.enums import DeviceBatteryLevel, DeviceLockStatus, DeviceLockWorkMode
-
 from homeassistant.components import bluetooth
 from homeassistant.components.lock import (
     LockEntity,
@@ -19,8 +15,9 @@ from homeassistant.const import (
     CONF_SCAN_INTERVAL,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
 
@@ -32,6 +29,9 @@ from .const import (
     LOGGER,
     UTEC_LOCKDATA,
 )
+from .utecio.ble.device import UtecBleDeviceError, UtecBleNotFoundError
+from .utecio.ble.lock import UtecBleLock
+from .utecio.enums import DeviceBatteryLevel, DeviceLockStatus, DeviceLockWorkMode
 
 
 async def async_setup_entry(
@@ -133,8 +133,6 @@ class UtecLock(LockEntity):
             "manufacturer": "U-tec",
             "model": self.lock.model or "Ultraloq Lock",
         }
-        if self.lock.sn:
-            info["serial_number"] = self.lock.sn
         return info
 
     @property
@@ -206,8 +204,7 @@ class UtecLock(LockEntity):
         self._transition_timeout_cancel = None
         if self._attr_is_locking or self._attr_is_unlocking:
             LOGGER.warning(
-                "Clearing stale transition state for %s after %s seconds",
-                self.name,
+                "Clearing stale Ultraloq transition state after %s seconds",
                 self._transition_timeout_seconds,
             )
             self._clear_transition_state()
@@ -272,11 +269,8 @@ class UtecLock(LockEntity):
                 self.hass, candidate, connectable=False
             ):
                 self._attributes["ble_connectable"] = False
-                self._attributes["ble_seen_address"] = candidate
                 LOGGER.warning(
-                    "Found only non-connectable BLE advertisement for %s at %s",
-                    self.lock.name,
-                    candidate,
+                    "Found only a non-connectable BLE advertisement for Ultraloq"
                 )
                 continue
 
@@ -284,13 +278,9 @@ class UtecLock(LockEntity):
                 self.hass, candidate, connectable=False
             ):
                 LOGGER.warning(
-                    "Found only non-connectable BLE service info for %s at %s",
-                    self.lock.name,
-                    candidate,
+                    "Found only non-connectable BLE service info for Ultraloq"
                 )
                 self._attributes["ble_connectable"] = False
-                self._attributes["ble_seen_address"] = candidate
-                self._attributes["ble_source"] = service_info.source
                 continue
 
         normalized_requested = device.replace(":", "").lower()
@@ -299,14 +289,9 @@ class UtecLock(LockEntity):
         ):
             if service_info.name == self.lock.name:
                 self._attributes["ble_connectable"] = service_info.connectable
-                self._attributes["ble_seen_address"] = service_info.address
-                self._attributes["ble_source"] = service_info.source
                 if service_info.connectable:
                     LOGGER.warning(
-                        "Resolved Ultraloq %s by name using discovered address %s instead of %s",
-                        self.lock.name,
-                        service_info.address,
-                        device,
+                        "Resolved an Ultraloq lock by advertised name"
                     )
                     return service_info.device
                 continue
@@ -314,16 +299,12 @@ class UtecLock(LockEntity):
             normalized_seen = service_info.address.replace(":", "").lower()
             if normalized_seen == normalized_requested:
                 self._attributes["ble_connectable"] = service_info.connectable
-                self._attributes["ble_seen_address"] = service_info.address
-                self._attributes["ble_source"] = service_info.source
                 if service_info.connectable:
                     return service_info.device
                 continue
 
         LOGGER.warning(
-            "Home Assistant cannot currently resolve BLE device for %s. Tried addresses: %s",
-            self.lock.name,
-            ", ".join(candidates),
+            "Home Assistant cannot currently resolve a connectable Ultraloq BLE device"
         )
         return None
 
@@ -332,7 +313,7 @@ class UtecLock(LockEntity):
         if self.update_track_cancel:
             self.update_track_cancel()
             self.update_track_cancel = None
-        LOGGER.debug("%s unavailable.", self.lock.name)
+        LOGGER.debug("Ultraloq lock unavailable")
         self._attr_available = False
         self.lock._ha_available = False
         self._notify_lock_state_listeners()
@@ -397,14 +378,14 @@ class UtecLock(LockEntity):
 
     async def async_update(self, **kwargs):
         """Update the lock."""
-        LOGGER.debug("Updating %s with scan interval: %s", self.name, self.scaninterval)
+        LOGGER.debug("Updating Ultraloq lock; scan interval=%s", self.scaninterval)
         self._update_in_progress = True
         try:
             await self.lock.async_update_status()
             self._sync_state_from_lock()
-            LOGGER.info("(%s) Updated.", self.name)
+            LOGGER.debug("Ultraloq lock updated")
         except (UtecBleDeviceError, UtecBleNotFoundError) as e:
-            LOGGER.error(e)
+            LOGGER.error("Ultraloq lock update failed (%s)", type(e).__name__)
         finally:
             self._update_in_progress = False
             self._notify_lock_state_listeners()
@@ -424,7 +405,8 @@ class UtecLock(LockEntity):
         except (UtecBleDeviceError, UtecBleNotFoundError) as e:
             self._clear_transition_state()
             self.async_write_ha_state()
-            LOGGER.error(e)
+            LOGGER.error("Ultraloq lock command failed (%s)", type(e).__name__)
+            raise HomeAssistantError("Ultraloq lock command failed") from e
 
     async def async_unlock(self, **kwargs):
         """Unlock the lock."""
@@ -441,18 +423,21 @@ class UtecLock(LockEntity):
                 async_call_later(
                     self.hass,
                     timedelta(seconds=self.lock.autolock_time),
-                    lambda Now: self._set_state_locked(),
+                    self._handle_autolock_due,
                 )
         except (UtecBleDeviceError, UtecBleNotFoundError) as e:
             self._clear_transition_state()
             self.async_write_ha_state()
-            LOGGER.error(e)
+            LOGGER.error("Ultraloq unlock command failed (%s)", type(e).__name__)
+            raise HomeAssistantError("Ultraloq unlock command failed") from e
 
     async def async_open(self, **kwargs: Any) -> None:
         """Open the door latch."""
         return await self.async_unlock(**kwargs)
 
-    def _set_state_locked(self):
-        LOGGER.debug("Autolock %s", self.name)
-        self._attr_is_locked = True
-        self.async_write_ha_state()
+    @callback
+    def _handle_autolock_due(self, _now) -> None:
+        """Poll instead of inventing a locked state when auto-lock is due."""
+
+        LOGGER.debug("Ultraloq auto-lock interval elapsed; requesting status")
+        self.request_update()

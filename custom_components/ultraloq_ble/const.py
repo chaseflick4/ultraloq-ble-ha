@@ -3,7 +3,6 @@ import asyncio
 import logging
 
 from aiohttp.client_exceptions import ClientConnectionError
-
 from homeassistant.const import Platform
 
 LOGGER = logging.getLogger(__package__)
@@ -16,8 +15,15 @@ PLATFORMS = [Platform.LOCK, Platform.SENSOR, Platform.NUMBER, Platform.BUTTON]
 DEFAULT_NAME = "Ultraloq BLE"
 TIMEOUT = 20
 CONF_API_DEVICES = "api_devices"
+CONF_ENROLLED_DEVICES = "enrolled_devices"
 CONF_STAGGER_DELAY = "stagger_delay"
-SERVICE_REFRESH_LOCKS = "refresh_locks"
+
+ENROLLMENT_NAME = "name"
+ENROLLMENT_MODEL = "model"
+ENROLLMENT_ADDRESS = "address"
+ENROLLMENT_WAKE_ADDRESS = "wake_address"
+ENROLLMENT_UID = "uid"
+ENROLLMENT_ADMIN_PIN = "admin_pin"
 
 UL_ERRORS = (asyncio.TimeoutError, ClientConnectionError)
 

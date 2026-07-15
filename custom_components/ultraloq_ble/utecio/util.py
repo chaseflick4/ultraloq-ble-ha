@@ -2,7 +2,6 @@ import datetime
 import logging
 import struct
 
-
 LOGGER = logging.getLogger("custom_components.ultraloq_ble.utecio")
 
 
@@ -86,7 +85,7 @@ def decode_password(password: int) -> str:
             return str4
         return str3
     except Exception:
-        LOGGER.exception("Failed to decode Ultraloq admin password from API response")
+        LOGGER.error("Failed to decode Ultraloq admin credential from API response")
         raise
 
 class DeviceNotAvailable(Exception):

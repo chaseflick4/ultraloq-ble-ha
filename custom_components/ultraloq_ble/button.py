@@ -60,8 +60,6 @@ class UltraloqRescanButton(ButtonEntity):
             "manufacturer": "U-tec",
             "model": self.lock.model or "Ultraloq Lock",
         }
-        if self.lock.sn:
-            info["serial_number"] = self.lock.sn
         return info
 
     async def async_press(self) -> None:

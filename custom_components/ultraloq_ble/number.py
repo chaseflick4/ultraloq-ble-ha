@@ -14,8 +14,8 @@ from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceIn
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, UTEC_LOCKDATA
-from .utecio.ble.lock import UtecBleLock
 from .utecio.ble.device import UtecBleDeviceError, UtecBleNotFoundError
+from .utecio.ble.lock import UtecBleLock
 from .utecio.enums import DeviceLockStatus
 
 
@@ -87,8 +87,6 @@ class UltraloqAutolockNumber(NumberEntity):
             "manufacturer": "U-tec",
             "model": self.lock.model or "Ultraloq Lock",
         }
-        if self.lock.sn:
-            info["serial_number"] = self.lock.sn
         return info
 
     async def async_set_native_value(self, value: float) -> None:

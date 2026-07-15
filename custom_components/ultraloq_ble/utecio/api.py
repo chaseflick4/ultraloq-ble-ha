@@ -8,10 +8,10 @@ import string
 import time
 from collections.abc import Mapping
 from typing import Any
-from . import known_devices, logger
 
 from aiohttp import ClientResponse, ClientSession
 
+from . import known_devices, logger
 from .ble.lock import UtecBleLock
 
 ### Headers
@@ -105,12 +105,7 @@ class UtecClient:
             raise InvalidResponse(message)
 
         if cls._is_error_response(response):
-            raise InvalidResponse(
-                response.get("message")
-                or response.get("msg")
-                or response.get("error")
-                or message
-            )
+            raise InvalidResponse(message)
 
         return response
 
@@ -155,8 +150,8 @@ class UtecClient:
                 "Login/password combination not found.",
             )
         except InvalidResponse as err:
-            logger.debug("UTEC login failed: %s", err)
-            raise InvalidCredentials(str(err)) from err
+            logger.debug("UTEC login failed")
+            raise InvalidCredentials("Xthings credentials were rejected") from err
 
     async def _get_addresses(self) -> None:
         """Fetch all addresses associated with an account."""
@@ -214,7 +209,9 @@ class UtecClient:
         try:
             response: dict[str, Any] = await resp.json()
         except Exception as err:
-            logger.debug("Failed to decode UTEC response: %s", err)
+            logger.debug(
+                "Failed to decode UTEC response (%s)", type(err).__name__
+            )
         else:
             return response
         return {}
@@ -245,9 +242,9 @@ class UtecClient:
                     capabilities = capabilities()
                 except Exception as err:
                     logger.warning(
-                        "Failed to initialize capabilities for model %s: %s",
+                        "Failed to initialize capabilities for model %s (%s)",
                         device.model,
-                        err,
+                        type(err).__name__,
                     )
                     capabilities = None
                 else:
@@ -268,6 +265,11 @@ class UtecClient:
         return devices
 
     async def get_json(self) -> list:
-        await self.sync_devices()
-
-        return self.devices
+        try:
+            await self.sync_devices()
+            return self.devices
+        finally:
+            self.email = ""
+            self.password = ""
+            self.token = None
+            self.mobile_uuid = None

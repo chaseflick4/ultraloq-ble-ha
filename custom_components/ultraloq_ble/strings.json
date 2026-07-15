@@ -10,7 +10,16 @@
         }
       },
       "reauth_confirm": {
-        "title": "Reauthenticate with your Xthings (U-tec) account credentials",
+        "title": "Refresh local BLE enrollment",
+        "description": "Credentials are sent to U-tec for this enrollment only and are not retained by the integration.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Refresh local BLE enrollment",
+        "description": "Enter the same Xthings account used during setup. Credentials are not retained.",
         "data": {
           "email": "Email",
           "password": "Password"
@@ -21,11 +30,13 @@
       "cannot_connect": "Failed to connect",
       "incorrect_email_pass": "Invalid Email and/or Password for selected account",
       "invalid_auth": "Invalid authentication. Are your credentials correct?",
-      "no_pets": "No locks found on account"
+      "no_locks": "No locks found on account"
     },
     "abort": {
       "already_configured": "Xthings (U-tec) account is already configured",
-      "reauth_successful": "Re-authentication was successful"
+      "reauth_successful": "BLE enrollment was refreshed",
+      "reconfigure_successful": "BLE enrollment was refreshed",
+      "wrong_account": "Use the same Xthings account that originally enrolled this integration"
     }
   },
   "options": {

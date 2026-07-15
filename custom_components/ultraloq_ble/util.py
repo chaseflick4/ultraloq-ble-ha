@@ -7,22 +7,22 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import LOGGER, UL_ERRORS
+from .enrollment import normalize_api_devices
 from .utecio.api import InvalidCredentials, InvalidResponse, UtecClient
 
 
-async def async_validate_api(hass: HomeAssistant, email: str, password: str) -> bool:
-    """Get data from API."""
+async def async_enroll_api_devices(
+    hass: HomeAssistant, email: str, password: str
+) -> list[dict[str, str]]:
+    """Fetch and minimize the device metadata needed for local BLE use."""
 
-    client = UtecClient(
-        email=email, password=password, session=async_get_clientsession(hass)
+    devices = normalize_api_devices(
+        await async_fetch_api_devices(hass, email, password)
     )
-
-    locks = await async_fetch_api_devices(hass, email, password)
-    if not locks:
+    if not devices:
         LOGGER.error("Could not retrieve any locks from Utec servers")
         raise NoDevicesError
-    else:
-        return True
+    return devices
 
 
 async def async_fetch_api_devices(
@@ -37,13 +37,13 @@ async def async_fetch_api_devices(
     try:
         return await client.get_json()
     except UL_ERRORS as err:
-        LOGGER.error("Failed to get information from UTEC servers: %s", err)
+        LOGGER.error("Failed to get information from UTEC servers")
         raise ConnectionError from err
-    except InvalidCredentials as err:
-        LOGGER.error("Failed to login to UTEC servers: %s", err)
+    except InvalidCredentials:
+        LOGGER.error("Failed to login to UTEC servers")
         raise
     except InvalidResponse as err:
-        LOGGER.error("Received an unexpected response from UTEC servers: %s", err)
+        LOGGER.error("Received an unexpected response from UTEC servers")
         raise ConnectionError from err
 
 

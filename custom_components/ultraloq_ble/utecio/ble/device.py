@@ -1,25 +1,32 @@
-import datetime
 import asyncio
+import datetime
 import hashlib
 import logging
 import struct
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from bleak import BleakClient
+from bleak.backends.characteristic import BleakGATTCharacteristic
+from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
+from bleak_retry_connector import BleakNotFoundError, establish_connection, get_device
+from Crypto.Cipher import AES
 from ecdsa import SECP128r1, SigningKey
 from ecdsa.ellipticcurve import Point
 
-from bleak import BleakClient
-from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
-from bleak_retry_connector import establish_connection, BleakNotFoundError, get_device
-
-from .. import logger, DeviceDefinition, GenericLock, known_devices
-from ..util import decode_password, bytes_to_int2
-from ..const import LOCK_MODE, BOLT_STATUS, BATTERY_LEVEL, CRC8Table
-from ..enums import BleResponseCode, BLECommandCode, DeviceServiceUUID, DeviceKeyUUID
-from Crypto.Cipher import AES
-from bleak.backends.characteristic import BleakGATTCharacteristic
+from ...const import (
+    ENROLLMENT_ADDRESS,
+    ENROLLMENT_ADMIN_PIN,
+    ENROLLMENT_MODEL,
+    ENROLLMENT_NAME,
+    ENROLLMENT_UID,
+    ENROLLMENT_WAKE_ADDRESS,
+)
+from .. import DeviceDefinition, GenericLock, known_devices, logger
+from ..const import BATTERY_LEVEL, BOLT_STATUS, LOCK_MODE, CRC8Table
+from ..enums import BLECommandCode, BleResponseCode, DeviceKeyUUID, DeviceServiceUUID
+from ..util import bytes_to_int2, decode_password
 
 RESPONSE_TIMEOUT_SECONDS = 15
 
@@ -111,6 +118,8 @@ class UtecBleDevice:
 
     @classmethod
     def from_json(cls, json_config: dict[str, Any]):
+        """Build a device from a legacy raw cloud record."""
+
         decoded_password = decode_password(json_config["user"]["password"])
         new_device = cls(
             device_name=json_config["name"],
@@ -121,18 +130,26 @@ class UtecBleDevice:
         )
         if json_config["params"]["extend_ble"]:
             new_device.wurx_uuid = json_config["params"]["extend_ble"]
-        new_device.sn = json_config["params"]["serialnumber"]
         new_device.model = json_config["model"]
         new_device.config = json_config
-        logger.debug(
-            "Loaded Ultraloq device name=%s model=%s mac=%s wurx=%s uid=%s password=%s",
-            new_device.name,
-            new_device.model,
-            new_device.mac_uuid,
-            new_device.wurx_uuid,
-            new_device.uid,
-            new_device.password,
+        logger.debug("Loaded legacy Ultraloq metadata for model %s", new_device.model)
+
+        return new_device
+
+    @classmethod
+    def from_enrollment(cls, enrollment: dict[str, Any]):
+        """Build a device from minimized local enrollment metadata."""
+
+        new_device = cls(
+            device_name=enrollment[ENROLLMENT_NAME],
+            uid=enrollment[ENROLLMENT_UID],
+            password=enrollment[ENROLLMENT_ADMIN_PIN],
+            mac_uuid=enrollment[ENROLLMENT_ADDRESS],
+            wurx_uuid=enrollment.get(ENROLLMENT_WAKE_ADDRESS, ""),
+            device_model=enrollment[ENROLLMENT_MODEL],
         )
+        new_device.config = {}
+        logger.debug("Loaded Ultraloq enrollment for model %s", new_device.model)
 
         return new_device
 
@@ -146,7 +163,7 @@ class UtecBleDevice:
         if self.error_callback:
             self.error_callback(e)
 
-        self.debug("(%s) %s", self.mac_uuid, e)
+        self.debug("Ultraloq BLE operation failed (%s)", type(e).__name__)
         return e
 
     def debug(self, msg: object, *args: object):
@@ -167,7 +184,7 @@ class UtecBleDevice:
             if len(self._requests) < 1:
                 raise self.error(
                     UtecBleError(
-                        f"Unable to process requests for {self.name}({self.mac_uuid}).",
+                        "Unable to process Ultraloq requests.",
                         "No commands to send.",
                     )
                 )
@@ -179,7 +196,7 @@ class UtecBleDevice:
                 client = await establish_connection(
                     client_class=BleakClient,
                     device=device,
-                    name=self.mac_uuid,
+                    name="Ultraloq lock",
                     max_attempts=1 if self.wurx_uuid else 2,
                     ble_device_callback=self._brc_get_lock_device,
                 )
@@ -195,18 +212,18 @@ class UtecBleDevice:
                     client = await establish_connection(
                         client_class=BleakClient,
                         device=device,
-                        name=self.mac_uuid,
+                        name="Ultraloq lock",
                         max_attempts=2,
                         ble_device_callback=self._brc_get_lock_device,
                     )
                 except (BleakError, BleakNotFoundError, TimeoutError) as second_err:
                     raise self.error(
                         UtecBleNotFoundError(
-                            f"Could not connect to device {self.name}({self.mac_uuid}).",
+                            "Could not connect to the Ultraloq lock.",
                             (
                                 "Connection failed after direct and wake-up attempts. "
-                                f"Direct error: {type(first_err).__name__}: {first_err}. "
-                                f"Wake-up error: {type(second_err).__name__}: {second_err}."
+                                f"Direct error: {type(first_err).__name__}. "
+                                f"Wake-up error: {type(second_err).__name__}."
                             ),
                         )
                     ) from None
@@ -218,14 +235,13 @@ class UtecBleDevice:
             except Exception:
                 raise self.error(
                     UtecBleDeviceError(
-                        f"Error communicating with device {self.name}({self.mac_uuid}).",
+                        "Error communicating with the Ultraloq lock.",
                         "Could not retrieve shared key.",
                     )
                 ) from None
 
             for request in self._requests[:]:
                 if not request.sent or not request.response.completed:
-                    # logger.debug("(%s) Sending command - %s (%s)",self.mac_uuid,request.command.name,request.package.hex())
                     request.aes_key = aes_key
                     request.device = self
                     request.sent = True
@@ -236,7 +252,7 @@ class UtecBleDevice:
                     except Exception:
                         raise self.error(
                             UtecBleDeviceError(
-                                f"Error communicating with device {self.name}({self.mac_uuid}).",
+                                "Error communicating with the Ultraloq lock.",
                                 f"Command {request.command.name} failed.",
                             )
                         ) from None
@@ -251,17 +267,13 @@ class UtecBleDevice:
                     await client.disconnect()
                 except TimeoutError as err:
                     logger.warning(
-                        "(%s) Timed out while disconnecting from %s: %s",
-                        self.mac_uuid,
-                        self.name,
-                        err,
+                        "Timed out while disconnecting from an Ultraloq lock (%s)",
+                        type(err).__name__,
                     )
                 except Exception as err:
                     logger.warning(
-                        "(%s) Unexpected error while disconnecting from %s: %s",
-                        self.mac_uuid,
-                        self.name,
-                        err,
+                        "Unexpected error while disconnecting from an Ultraloq lock (%s)",
+                        type(err).__name__,
                     )
             self.is_busy = False
 
@@ -286,26 +298,22 @@ class UtecBleDevice:
         wclient: BleakClient = await establish_connection(
             client_class=BleakClient,
             device=device,
-            name=self.wurx_uuid,
+            name="Ultraloq wake receiver",
             max_attempts=2,
             ble_device_callback=self._brc_get_wurx_device,
         )
-        self.debug("(%s) Wake-up reciever %s connected.", self.mac_uuid, self.wurx_uuid)
+        self.debug("Ultraloq wake-up receiver connected")
         try:
             await wclient.disconnect()
         except TimeoutError as err:
             logger.warning(
-                "(%s) Timed out while disconnecting wake receiver %s: %s",
-                self.mac_uuid,
-                self.wurx_uuid,
-                err,
+                "Timed out while disconnecting an Ultraloq wake receiver (%s)",
+                type(err).__name__,
             )
         except Exception as err:
             logger.warning(
-                "(%s) Unexpected error while disconnecting wake receiver %s: %s",
-                self.mac_uuid,
-                self.wurx_uuid,
-                err,
+                "Unexpected error while disconnecting an Ultraloq wake receiver (%s)",
+                type(err).__name__,
             )
 
 
@@ -314,7 +322,7 @@ class UtecBleRequest:
         self,
         command: BLECommandCode,
         device: UtecBleDevice = None,
-        data: bytes = bytes(),
+        data: bytes = b"",
         auth_required: bool = False,
     ):
         if command in {
@@ -373,13 +381,7 @@ class UtecBleRequest:
         self._write_pos += data_len
 
     def _append_auth(self, uid: str, password: str = ""):
-        logger.debug(
-            "Building auth payload uid=%s password=%s password_len=%s for %s",
-            uid,
-            password,
-            len(password) if password else 0,
-            self.command.name,
-        )
+        logger.debug("Building authenticated payload for %s", self.command.name)
         if uid:
             byte_array = bytearray(int(uid).to_bytes(4, "little"))
             self.buffer[self._write_pos : self._write_pos + 4] = byte_array
@@ -438,18 +440,11 @@ class UtecBleRequest:
 
     async def _get_response(self, client: BleakClient):
         self.response = UtecBleResponse(self, self.device)
+        notification_started = False
         try:
-            logger.debug(
-                "(%s) Sending %s plain=%s encrypted=%s auth_required=%s uid=%s password=%s",
-                self.device.mac_uuid,
-                self.command.name,
-                self.package.hex(),
-                self.encrypted_package(self.aes_key).hex(),
-                self.auth_required,
-                self.device.uid,
-                self.device.password,
-            )
+            logger.debug("Sending Ultraloq command %s", self.command.name)
             await client.start_notify(self.uuid, self.response._receive_write_response)
+            notification_started = True
             await client.write_gatt_char(
                 self.uuid, self.encrypted_package(self.aes_key)
             )
@@ -461,7 +456,7 @@ class UtecBleRequest:
             except TimeoutError as err:
                 raise self.device.error(
                     UtecBleDeviceError(
-                        f"Error communicating with device {self.device.name}({self.device.mac_uuid}).",
+                        "Error communicating with the Ultraloq lock.",
                         (
                             f"Timed out waiting {RESPONSE_TIMEOUT_SECONDS} seconds "
                             f"for {self.command.name} response."
@@ -482,14 +477,21 @@ class UtecBleRequest:
             ):
                 raise self.device.error(
                     UtecBleDeviceError(
-                        f"Error communicating with device {self.device.name}({self.device.mac_uuid}).",
+                        "Error communicating with the Ultraloq lock.",
                         f"Command {self.command.name} was rejected by the lock.",
                     )
                 )
         except Exception as e:
             raise self.device.error(e)
         finally:
-            await client.stop_notify(self.uuid)
+            if notification_started:
+                try:
+                    await client.stop_notify(self.uuid)
+                except Exception as err:
+                    logger.debug(
+                        "Failed to stop Ultraloq notifications (%s)",
+                        type(err).__name__,
+                    )
 
 
 class UtecBleResponse:
@@ -504,18 +506,16 @@ class UtecBleResponse:
     ):
         try:
             logger.debug(
-                "(%s) Notification chunk for %s sender=%s raw=%s",
-                self.device.mac_uuid,
+                "Received Ultraloq notification chunk for %s (%s bytes)",
                 self.request.command.name,
-                getattr(sender, "uuid", sender),
-                data.hex(),
+                len(data),
             )
             self._append(data, bytearray(self.request.aes_key))
             if self.completed and self.is_valid:
                 await self._read_response()
                 self.response_completed.set()
         except Exception as e:
-            e.add_note(f"({self.device.mac_uuid}) Error receiving write response.")
+            e.add_note("Error receiving an Ultraloq write response.")
             raise self.device.error(e)
 
     def reset(self):
@@ -575,11 +575,16 @@ class UtecBleResponse:
 
     @property
     def command(self) -> BleResponseCode | Any:
-        return BleResponseCode(self.buffer[3]) if self.completed else None
+        if not self.completed:
+            return None
+        try:
+            return BleResponseCode(self.buffer[3])
+        except ValueError:
+            return None
 
     @property
     def success(self) -> bool:
-        return True if self.completed and self.buffer[4] == 0 else False
+        return self.completed and self.length > 4 and self.buffer[4] == 0
 
     @property
     def data(self) -> bytearray:
@@ -591,118 +596,100 @@ class UtecBleResponse:
     async def _read_response(self):
         try:
             logger.debug(
-                "(%s) Parsed response cmd=%s success=%s package=%s data=%s",
-                self.device.mac_uuid,
+                "Parsed Ultraloq response cmd=%s success=%s",
                 self.command.name,
                 self.success,
-                self.package.hex(),
-                self.data.hex(),
-            )
-            self.device.debug(
-                "(%s) Response %s (%s): %s",
-                self.device.mac_uuid,
-                self.command.name,
-                "Success" if self.success else "Failed",
-                self.package.hex(),
             )
             if not self.success:
                 logger.warning(
-                    "(%s) Lock reported failure for %s: %s",
-                    self.device.mac_uuid,
-                    self.command.name,
-                    self.package.hex(),
+                    "Ultraloq lock reported failure for %s", self.command.name
                 )
 
             if self.command == BleResponseCode.GET_LOCK_STATUS:
                 self.device.lock_mode = int(self.data[0])
                 self.device.bolt_status = int(self.data[1])
                 self.device.debug(
-                    f"({self.device.mac_uuid}) lock:{self.device.lock_mode} ({LOCK_MODE[self.device.lock_mode]}) |  bolt:{self.device.bolt_status} ({BOLT_STATUS[self.device.bolt_status]})"
+                    "Lock mode=%s (%s), bolt status=%s (%s)",
+                    self.device.lock_mode,
+                    LOCK_MODE[self.device.lock_mode],
+                    self.device.bolt_status,
+                    BOLT_STATUS[self.device.bolt_status],
                 )
 
             elif self.command == BleResponseCode.SET_LOCK_STATUS:
                 self.device.lock_mode = self.data[0]
-                self.device.debug(
-                    f"({self.device.mac_uuid}) workmode:{self.device.lock_mode}"
-                )
+                self.device.debug("Work mode=%s", self.device.lock_mode)
 
             elif self.command == BleResponseCode.GET_BATTERY:
                 self.device.battery = int(self.data[0])
                 self.device.debug(
-                    f"({self.device.mac_uuid}) power level:{self.device.battery}, {BATTERY_LEVEL[self.device.battery]}"
+                    "Battery level=%s (%s)",
+                    self.device.battery,
+                    BATTERY_LEVEL[self.device.battery],
                 )
 
             elif self.command == BleResponseCode.GET_AUTOLOCK:
                 self.device.autolock_time = bytes_to_int2(self.data[:2])
-                self.device.debug(
-                    "(%s) autolock:%s", self.device.mac_uuid, self.device.autolock_time
-                )
+                self.device.debug("Auto-lock time=%s", self.device.autolock_time)
 
             elif self.command == BleResponseCode.SET_AUTOLOCK:
                 if self.success:
                     self.device.autolock_time = bytes_to_int2(self.data[:2])
-                    self.device.debug(
-                        "(%s) autolock:%s",
-                        self.device.mac_uuid,
-                        self.device.autolock_time,
-                    )
+                    self.device.debug("Auto-lock time=%s", self.device.autolock_time)
 
             elif self.command == BleResponseCode.GET_BATTERY:
                 self.device.battery = int(self.data[0])
                 self.device.debug(
-                    f"({self.device.mac_uuid}) power level:{self.device.battery}, {BATTERY_LEVEL[self.device.battery]}"
+                    "Battery level=%s (%s)",
+                    self.device.battery,
+                    BATTERY_LEVEL[self.device.battery],
                 )
 
             elif self.command == BleResponseCode.GET_SN:
                 self.device.sn = self.data.decode("ISO8859-1")
-                self.device.debug(
-                    "(%s) serial:%s", self.device.mac_uuid, self.device.sn
-                )
+                self.device.debug("Serial number read successfully")
 
             elif self.command == BleResponseCode.GET_MUTE:
                 self.device.mute = bool(self.data[0])
-                self.device.debug(f"({self.device.mac_uuid}) mute:{self.device.mute}")
+                self.device.debug("Mute=%s", self.device.mute)
 
             elif self.command == BleResponseCode.SET_WORK_MODE:
                 if self.success:
                     self.device.lock_mode = self.data[0]
-                    self.device.debug(
-                        f"({self.device.mac_uuid}) workmode:{self.device.lock_mode}"
-                    )
+                    self.device.debug("Work mode=%s", self.device.lock_mode)
 
             elif self.command == BleResponseCode.UNLOCK:
-                self.device.debug(
-                    f"({self.device.mac_uuid}) {self.device.name} - Unlocked."
-                )
+                self.device.debug("Unlock command completed")
 
             elif self.command == BleResponseCode.BOLT_LOCK:
-                self.device.debug(
-                    f"({self.device.mac_uuid}) {self.device.name} - Bolt Locked"
-                )
+                self.device.debug("Lock command completed")
 
             elif self.command == BleResponseCode.LOCK_STATUS:
                 self.device.lock_status = int(self.data[0])
                 self.device.bolt_status = int(self.data[1])
                 self.device.debug(
-                    f"({self.device.mac_uuid}) lock:{self.device.lock_status} |  bolt:{self.device.bolt_status}"
+                    "Lock status=%s, bolt status=%s",
+                    self.device.lock_status,
+                    self.device.bolt_status,
                 )
                 if self.length > 16:
                     self.device.battery = int(self.data[2])
                     self.device.lock_mode = int(self.data[3])
                     self.device.mute = bool(self.data[4])
                     self.device.debug(
-                        f"({self.device.mac_uuid}) power level:{self.device.battery} | mute:{self.device.mute} | mode:{self.device.lock_mode}"
+                        "Battery level=%s, mute=%s, mode=%s",
+                        self.device.battery,
+                        self.device.mute,
+                        self.device.lock_mode,
                     )
 
-            self.device.debug(
-                f"({self.device.mac_uuid}) Command Completed - {self.command.name}"
-            )
+            self.device.debug("Command completed: %s", self.command.name)
 
         except Exception as e:
             raise self.device.error(
                 UtecBleDeviceError(
-                    f"Error updating lock data for {self.device.name}({self.device.mac_uuid}).",
-                    f"While handling {self.command.name}: {e}",
+                    "Error updating Ultraloq lock data.",
+                    f"While handling {self.command.name}: {type(e).__name__}",
                 )
             )
 
@@ -711,18 +698,17 @@ class UtecBleDeviceKey:
     @staticmethod
     async def get_shared_key(client: BleakClient, device: UtecBleDevice) -> bytes:
         if client.services.get_characteristic(DeviceKeyUUID.STATIC.value):
-            device.debug("(%s) Using STATIC key exchange.", client.address)
+            device.debug("Using STATIC key exchange")
             secret = await client.read_gatt_char(DeviceKeyUUID.STATIC.value)
-            device.debug("(%s) STATIC key secret:%s", client.address, secret.hex())
             return bytearray(b"Anviz.ut") + secret
         elif client.services.get_characteristic(DeviceKeyUUID.MD5.value):
-            device.debug("(%s) Using MD5 key exchange.", client.address)
+            device.debug("Using MD5 key exchange")
             return await UtecBleDeviceKey.get_md5_key(client, device)
         elif client.services.get_characteristic(DeviceKeyUUID.ECC.value):
-            device.debug("(%s) Using ECC key exchange.", client.address)
+            device.debug("Using ECC key exchange")
             return await UtecBleDeviceKey.get_ecc_key(client, device)
         else:
-            raise NotImplementedError(f"({client.address}) Unknown encryption.")
+            raise NotImplementedError("Unknown Ultraloq encryption method.")
 
     @staticmethod
     async def get_ecc_key(client: BleakClient, device: UtecBleDevice) -> bytes:
@@ -736,31 +722,20 @@ class UtecBleDeviceKey:
             notification_event = asyncio.Event()
 
             def notification_handler(sender, data):
-                device.debug(
-                    "(%s) ECC notification chunk sender=%s data=%s",
-                    client.address,
-                    getattr(sender, "uuid", sender),
-                    data.hex(),
-                )
+                device.debug("Received ECC notification chunk")
                 received_pubkey.append(data)
                 if len(received_pubkey) == 2:
                     notification_event.set()
 
-            device.debug("(%s) Starting ECC notify.", client.address)
+            device.debug("Starting ECC key exchange")
             await client.start_notify(DeviceKeyUUID.ECC.value, notification_handler)
-            device.debug("(%s) Writing ECC public key X=%s", client.address, pub_x.hex())
             await client.write_gatt_char(DeviceKeyUUID.ECC.value, pub_x)
-            device.debug("(%s) Writing ECC public key Y=%s", client.address, pub_y.hex())
             await client.write_gatt_char(DeviceKeyUUID.ECC.value, pub_y)
-            device.debug("(%s) Waiting for ECC key response.", client.address)
+            device.debug("Waiting for ECC key response")
             await notification_event.wait()
 
             await client.stop_notify(DeviceKeyUUID.ECC.value)
-            device.debug(
-                "(%s) Received ECC public key parts=%s",
-                client.address,
-                len(received_pubkey),
-            )
+            device.debug("Received ECC public key")
 
             rec_key_point = Point(
                 SECP128r1.curve,
@@ -769,10 +744,10 @@ class UtecBleDeviceKey:
             )
             shared_point = private_key.privkey.secret_multiplier * rec_key_point  # type: ignore # noqa
             shared_key = int.to_bytes(shared_point.x(), 16, "little")
-            device.debug("(%s) ECC key updated: %s", client.address, shared_key.hex())
+            device.debug("ECC shared key established")
             return shared_key
         except Exception as e:
-            e.add_note(f"({client.address}) Failed to update ECC key: {e}")
+            e.add_note("Failed to update the Ultraloq ECC key.")
             raise device.error(e)
 
     @staticmethod
@@ -780,11 +755,9 @@ class UtecBleDeviceKey:
         try:
             secret = await client.read_gatt_char(DeviceKeyUUID.MD5.value)
 
-            device.debug("(%s) MD5 key secret: %s", client.address, secret.hex())
-
             if len(secret) != 16:
                 raise device.error(
-                    ValueError(f"({client.address}) Expected secret of length 16.")
+                    ValueError("Expected an Ultraloq secret of length 16.")
                 )
 
             part1 = struct.unpack("<Q", secret[:8])[0]  # Little-endian
@@ -825,9 +798,9 @@ class UtecBleDeviceKey:
                 m.update(result)
                 result = m.digest()
 
-            device.debug("(%s) MD5 key: %s", client.address, result.hex())
+            device.debug("MD5 shared key established")
             return result
 
         except Exception as e:
-            e.add_note(f"({client.address}) Failed to update MD5 key: {e}")
+            e.add_note("Failed to update the Ultraloq MD5 key.")
             raise device.error(e)

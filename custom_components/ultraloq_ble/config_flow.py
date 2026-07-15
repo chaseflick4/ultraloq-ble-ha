@@ -1,19 +1,17 @@
 """Config flow for Ultraloq BLE integration."""
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
+import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
-
 from homeassistant import config_entries
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, CONF_SCAN_INTERVAL
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-import homeassistant.helpers.config_validation as cv
-from homeassistant.const import CONF_SCAN_INTERVAL
 
 from .const import (
+    CONF_ENROLLED_DEVICES,
     CONF_STAGGER_DELAY,
     DEFAULT_NAME,
     DEFAULT_SCAN_INTERVAL,
@@ -21,7 +19,8 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
-from .util import NoDevicesError, async_validate_api, InvalidCredentials
+from .enrollment import account_unique_id
+from .util import InvalidCredentials, NoDevicesError, async_enroll_api_devices
 
 DATA_SCHEMA = vol.Schema(
     {
@@ -34,7 +33,7 @@ DATA_SCHEMA = vol.Schema(
 class UltraloqConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Ultraloq integration."""
 
-    VERSION = 1
+    VERSION = 2
 
     entry: config_entries.ConfigEntry | None
 
@@ -46,8 +45,35 @@ class UltraloqConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Get the options flow for this handler."""
         return UltraloqOptionsFlowHandler(config_entry)
 
-    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> FlowResult:
-        """Handle re-authentication with Utec."""
+    async def _async_enroll(
+        self, user_input: dict[str, Any]
+    ) -> tuple[list[dict[str, str]] | None, dict[str, str]]:
+        """Use Xthings credentials once and return minimized BLE metadata."""
+
+        try:
+            devices = await async_enroll_api_devices(
+                self.hass,
+                user_input[CONF_EMAIL],
+                user_input[CONF_PASSWORD],
+            )
+        except ConnectionError:
+            return None, {"base": "cannot_connect"}
+        except NoDevicesError:
+            return None, {"base": "no_locks"}
+        except InvalidCredentials:
+            return None, {"base": "invalid_auth"}
+        except Exception as err:
+            LOGGER.error(
+                "Unexpected error during Ultraloq enrollment (%s)",
+                type(err).__name__,
+            )
+            return None, {"base": "cannot_connect"}
+        return devices, {}
+
+    async def async_step_reauth(
+        self, _entry_data: dict[str, Any]
+    ) -> FlowResult:
+        """Handle explicit cloud-assisted re-enrollment."""
 
         self.entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         return await self.async_step_reauth_confirm()
@@ -59,36 +85,47 @@ class UltraloqConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         errors: dict[str, str] = {}
 
-        if user_input:
-            email = user_input[CONF_EMAIL]
-            password = user_input[CONF_PASSWORD]
-            try:
-                await async_validate_api(self.hass, email, password)
-            except ConnectionError:
-                errors["base"] = "cannot_connect"
-            except NoDevicesError:
-                errors["base"] = "no_locks"
-            except InvalidCredentials:
-                errors["base"] = "invalid_auth"
-            except Exception:
-                LOGGER.exception("Unexpected error during Ultraloq reauthentication")
-                errors["base"] = "cannot_connect"
-            else:
+        if user_input is not None:
+            devices, errors = await self._async_enroll(user_input)
+            if devices is not None:
                 assert self.entry is not None
-
-                self.hass.config_entries.async_update_entry(
+                account_id = account_unique_id(user_input[CONF_EMAIL])
+                await self.async_set_unique_id(account_id)
+                self._abort_if_unique_id_mismatch(reason="wrong_account")
+                return self.async_update_and_abort(
                     self.entry,
-                    data={
-                        CONF_EMAIL: email,
-                        CONF_PASSWORD: password,
-                    },
+                    unique_id=account_id,
+                    data={CONF_ENROLLED_DEVICES: devices},
+                    reason="reauth_successful",
                 )
-                await self.hass.config_entries.async_reload(self.entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
-                # errors["base"] = "incorrect_email_pass"
 
         return self.async_show_form(
             step_id="reauth_confirm",
+            data_schema=DATA_SCHEMA,
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Refresh cached BLE enrollment without retaining cloud credentials."""
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            devices, errors = await self._async_enroll(user_input)
+            if devices is not None:
+                account_id = account_unique_id(user_input[CONF_EMAIL])
+                await self.async_set_unique_id(account_id)
+                self._abort_if_unique_id_mismatch(reason="wrong_account")
+                return self.async_update_and_abort(
+                    self._get_reconfigure_entry(),
+                    unique_id=account_id,
+                    data={CONF_ENROLLED_DEVICES: devices},
+                    reason="reconfigure_successful",
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
             data_schema=DATA_SCHEMA,
             errors=errors,
         )
@@ -100,27 +137,17 @@ class UltraloqConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         errors: dict[str, str] = {}
 
-        if user_input:
-            email = user_input[CONF_EMAIL]
-            password = user_input[CONF_PASSWORD]
-            try:
-                await async_validate_api(self.hass, email, password)
-            except ConnectionError:
-                errors["base"] = "cannot_connect"
-            except NoDevicesError:
-                errors["base"] = "no_locks"
-            except InvalidCredentials:
-                errors["base"] = "invalid_auth"
-            except Exception:
-                LOGGER.exception("Unexpected error during Ultraloq configuration")
-                errors["base"] = "cannot_connect"
-            else:
-                await self.async_set_unique_id(email)
+        if user_input is not None:
+            devices, errors = await self._async_enroll(user_input)
+            if devices is not None:
+                await self.async_set_unique_id(
+                    account_unique_id(user_input[CONF_EMAIL])
+                )
                 self._abort_if_unique_id_configured()
 
                 return self.async_create_entry(
                     title=DEFAULT_NAME,
-                    data={CONF_EMAIL: email, CONF_PASSWORD: password},
+                    data={CONF_ENROLLED_DEVICES: devices},
                     options={
                         CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
                         CONF_STAGGER_DELAY: DEFAULT_STAGGER_DELAY,

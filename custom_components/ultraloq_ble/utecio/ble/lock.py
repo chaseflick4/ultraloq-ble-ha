@@ -1,5 +1,3 @@
-import datetime
-
 from ..enums import BLECommandCode, DeviceLockWorkMode
 from ..util import to_byte_array
 from .device import UtecBleDevice, UtecBleRequest
@@ -81,7 +79,7 @@ class UtecBleLock(UtecBleDevice):
         await self.send_requests()
 
     async def async_update_status(self):
-        self.debug("(%s) %s - Updating lock data...", self.mac_uuid, self.name)
+        self.debug("Updating Ultraloq lock data")
         self.add_request(
             UtecBleRequest(BLECommandCode.ADMIN_LOGIN, device=self, auth_required=True)
         )
@@ -96,4 +94,4 @@ class UtecBleLock(UtecBleDevice):
 
         # self.add_request(BleRequest(device=self, command=BLECommandCode.READ_TIME))
         await self.send_requests()
-        self.debug("(%s) %s - Update Successful.", self.mac_uuid, self.name)
+        self.debug("Ultraloq lock update completed")

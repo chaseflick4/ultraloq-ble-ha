@@ -16,7 +16,7 @@ body:
   attributes:
     label: Checklist
     options:
-      - label: I have enabled debug logging for my installation.
+      - label: I reviewed any attached logs and diagnostics for private data.
         required: true
       - label: I have filled out the issue template to the best of my ability.
         required: true
@@ -44,12 +44,12 @@ body:
 - type: textarea
   attributes:
     label: "Debug logs"
-    description: "To enable debug logs check this https://www.home-assistant.io/integrations/logger/, this **needs** to include _everything_ from startup of Home Assistant to the point where you encounter the issue."
+    description: "Attach only the shortest relevant log excerpt. Never post Xthings credentials, lock PINs/admin credentials, UIDs, tokens, keys, packets, serial numbers, or Bluetooth addresses. Review the text before submitting."
     render: text
   validations:
-    required: true
+    required: false
 
 - type: textarea
   attributes:
     label: "Diagnostics dump"
-    description: "Drag the diagnostics dump file here. (see https://www.home-assistant.io/integrations/diagnostics/ for info)"
+    description: "Prefer the integration diagnostics dump over raw debug logs, and still review it before uploading. (see https://www.home-assistant.io/integrations/diagnostics/ for info)"

@@ -1,25 +1,26 @@
 """Ultraloq BLE component."""
 from __future__ import annotations
-from functools import partial
+
 import logging
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryNotReady
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_API_DEVICES,
+    CONF_ENROLLED_DEVICES,
     DOMAIN,
     LOGGER,
     PLATFORMS,
-    SERVICE_REFRESH_LOCKS,
     UPDATE_LISTENER,
     UTEC_LOCKDATA,
 )
-from .util import async_fetch_api_devices
+from .enrollment import account_unique_id, normalize_api_devices
 from .utecio import known_devices
 from .utecio.ble.lock import UtecBleLock
+from .util import async_enroll_api_devices
 
 
 def debug_mode():
@@ -27,12 +28,14 @@ def debug_mode():
     return LOGGER.isEnabledFor(logging.DEBUG)
 
 
-def _build_ble_devices(api_devices: list[dict[str, Any]]) -> list[UtecBleLock]:
-    """Build BLE lock objects from cached API metadata."""
+def _build_ble_devices(
+    enrolled_devices: list[dict[str, Any]],
+) -> list[UtecBleLock]:
+    """Build BLE lock objects from minimized cached enrollment metadata."""
 
     devices: list[UtecBleLock] = []
-    for api_device in api_devices:
-        device = UtecBleLock.from_json(api_device)
+    for enrolled_device in enrolled_devices:
+        device = UtecBleLock.from_enrollment(enrolled_device)
         capabilities = device.capabilities
         if isinstance(capabilities, type):
             try:
@@ -59,49 +62,52 @@ def _build_ble_devices(api_devices: list[dict[str, Any]]) -> list[UtecBleLock]:
     return devices
 
 
-async def _async_refresh_entry_devices(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> list[dict[str, Any]]:
-    """Fetch and persist fresh API device metadata for one config entry."""
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Replace stored cloud credentials and raw API data with a minimal cache."""
 
-    api_devices = await async_fetch_api_devices(
-        hass,
-        entry.data[CONF_EMAIL],
-        entry.data[CONF_PASSWORD],
-    )
+    if entry.version >= 2:
+        return True
+
+    email = entry.data.get(CONF_EMAIL)
+    try:
+        if raw_devices := entry.data.get(CONF_API_DEVICES):
+            enrolled_devices = normalize_api_devices(raw_devices)
+        elif email and (password := entry.data.get(CONF_PASSWORD)):
+            enrolled_devices = await async_enroll_api_devices(hass, email, password)
+        else:
+            LOGGER.error("Cannot migrate Ultraloq entry without enrollment metadata")
+            return False
+    except Exception as err:
+        LOGGER.error(
+            "Could not migrate Ultraloq enrollment (%s)", type(err).__name__
+        )
+        return False
+
+    if not enrolled_devices:
+        LOGGER.error("Cannot migrate Ultraloq entry with no BLE devices")
+        return False
+
+    unique_id = account_unique_id(email) if email else entry.unique_id
     hass.config_entries.async_update_entry(
         entry,
-        data={**entry.data, CONF_API_DEVICES: api_devices},
+        data={CONF_ENROLLED_DEVICES: enrolled_devices},
+        unique_id=unique_id,
+        version=2,
     )
-    return api_devices
-
-
-async def _async_handle_refresh_locks(
-    hass: HomeAssistant, call: ServiceCall
-) -> None:
-    """Refresh cached lock metadata for all configured Ultraloq entries."""
-
-    for entry in hass.config_entries.async_entries(DOMAIN):
-        await _async_refresh_entry_devices(hass, entry)
-        await hass.config_entries.async_reload(entry.entry_id)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Lock from a config entry."""
 
-    api_devices = entry.data.get(CONF_API_DEVICES)
-    if api_devices is None:
-        api_devices = await _async_refresh_entry_devices(hass, entry)
-
-    devices = _build_ble_devices(api_devices)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {UTEC_LOCKDATA: devices}
-
-    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_LOCKS):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_REFRESH_LOCKS,
-            partial(_async_handle_refresh_locks, hass),
+    enrolled_devices = entry.data.get(CONF_ENROLLED_DEVICES)
+    if not enrolled_devices:
+        raise ConfigEntryNotReady(
+            "Ultraloq BLE enrollment is missing; run reconfigure to refresh it"
         )
+
+    devices = _build_ble_devices(enrolled_devices)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {UTEC_LOCKDATA: devices}
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -120,34 +126,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         del hass.data[DOMAIN][entry.entry_id]
         if not hass.data[DOMAIN]:
             del hass.data[DOMAIN]
-            if hass.services.has_service(DOMAIN, SERVICE_REFRESH_LOCKS):
-                hass.services.async_remove(DOMAIN, SERVICE_REFRESH_LOCKS)
     return unload_ok
-
-
-# async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-#     """ Migrate old entry. """
-
-#     if entry.version in [1,2]:
-#         if entry.version == 1:
-#             email = entry.data[CONF_USERNAME]
-#         else:
-#             email = entry.data[CONF_EMAIL]
-#         password = entry.data[CONF_PASSWORD]
-
-#         LOGGER.debug(f'Migrate config entry unique id to {email}')
-#         entry.version = 3
-
-#         hass.config_entries.async_update_entry(
-#             entry,
-#             data={
-#                 CONF_EMAIL: email,
-#                 CONF_PASSWORD: password,
-#             },
-#             options={CONF_ZONE_METHOD: DEFAULT_ZONE_METHOD},
-#             unique_id=email,
-#         )
-#     return True
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
